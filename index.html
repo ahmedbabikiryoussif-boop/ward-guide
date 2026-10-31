@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="manifest" href="/manifest.webmanifest"><link rel="apple-touch-icon" href="/icon-180.png"><meta name="theme-color" content="#0b6e8a"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="Ward Guide">
+<title>Ward Guide: Clinical Evidence Assistant</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--text:#16202a;--muted:#5d6b78;--accent:#0b6e8a;--accent-t:#fff;--line:#dfe4ea;--warn:#fff4e0;--warn-t:#7a4a00;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0f1519;--card:#18222a;--text:#e6edf2;--muted:#93a3b0;--accent:#4cb7d4;--accent-t:#06222b;--line:#2a3944;--warn:#33270f;--warn-t:#f0c56e}}
+*{box-sizing:border-box}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 -apple-system,system-ui,"Segoe UI",Roboto,sans-serif}
+main{max-width:760px;margin:0 auto;padding:16px}
+h1{font-size:1.25rem;margin:4px 0 2px}
+.sub{color:var(--muted);font-size:.85rem;margin-bottom:12px}
+.warn{background:var(--warn);color:var(--warn-t);padding:8px 12px;border-radius:10px;font-size:.8rem;margin-bottom:12px}
+textarea{width:100%;min-height:84px;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--text);font:inherit;resize:vertical}
+.chips{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.chip{border:1px solid var(--line);background:var(--card);color:var(--text);padding:7px 12px;border-radius:999px;font-size:.85rem;cursor:pointer}
+.chip[aria-pressed="true"]{background:var(--accent);color:var(--accent-t);border-color:var(--accent)}
+.row{display:flex;gap:8px}
+button.go{flex:1;background:var(--accent);color:var(--accent-t);border:0;border-radius:12px;padding:13px;font:600 1rem inherit;cursor:pointer}
+button.go:disabled{opacity:.6}
+button.sec{background:var(--card);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:13px 16px;font:inherit;cursor:pointer}
+#out{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:4px 16px 16px;margin-top:16px;display:none}
+#out h2{font-size:1.05rem;color:var(--accent);margin:18px 0 6px;border-bottom:1px solid var(--line);padding-bottom:4px}
+#out h3{font-size:.95rem;margin:12px 0 4px}
+#out p{margin:6px 0}#out ul,#out ol{margin:6px 0;padding-left:22px}
+#out li{margin:3px 0}
+.links{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.links a{font-size:.8rem;color:var(--accent);border:1px solid var(--line);border-radius:8px;padding:6px 10px;text-decoration:none}
+.err{color:#c0392b;margin-top:12px}
+.hist{margin-top:18px;font-size:.85rem;color:var(--muted)}
+.hist button{display:block;background:none;border:0;color:var(--accent);padding:4px 0;text-align:left;font:inherit;cursor:pointer}
+</style>
+</head>
+<body>
+<main>
+<h1>🩺 Ward Guide</h1>
+<div class="sub">Guideline and evidence summaries for internal medicine</div>
+<div class="warn">Decision support only. Built from live PubMed records plus Claude’s knowledge. Check doses against the BNF and local policy, and never enter patient identifiers.</div>
+
+<textarea id="q" placeholder="Case or question, e.g. 68M, breathless, bilateral pleural effusions, raised CRP, or “BTS oxygen target in COPD”"></textarea>
+<div class="chips" id="modes">
+  <button class="chip" data-m="oncall" aria-pressed="false">🚨 On-call</button>
+  <button class="chip" data-m="full" aria-pressed="true">Full case work-up</button>
+  <button class="chip" data-m="quick" aria-pressed="false">Quick answer</button>
+  <button class="chip" data-m="evidence" aria-pressed="false">Latest evidence</button>
+  <button class="chip" data-m="mrcp" aria-pressed="false">MRCP topic</button>
+</div>
+<div class="row"><button class="go" id="go">Search</button><button class="sec" id="copy" style="display:none">Copy</button></div>
+<div id="err" class="err"></div>
+<div id="out"></div>
+<div class="links" id="links"></div>
+<div class="hist" id="hist"></div>
+</main>
+<script>
+(function(){
+var mode="full",busy=false,last="";
+var $=function(i){return document.getElementById(i)};
+var q=$("q"),out=$("out"),err=$("err");
+
+document.querySelectorAll(".chip").forEach(function(c){c.onclick=function(){
+  mode=c.dataset.m;document.querySelectorAll(".chip").forEach(function(x){x.setAttribute("aria-pressed",x===c?"true":"false")});};});
+
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")}
+function inl(s){return esc(s).replace(/PMID:?\s*(\d{6,9})/g,'<a target="_blank" rel="noopener" href="https://pubmed.ncbi.nlm.nih.gov/$1/">PMID $1</a>').replace(/\*\*(.+?)\*\*/g,"<strong>$1</strong>").replace(/\*(.+?)\*/g,"<em>$1</em>")}
+function md(t){
+  var h="",list=null,lines=t.split("\n");
+  function close(){if(list){h+="</"+list+">";list=null}}
+  lines.forEach(function(l){
+    var m;
+    if(m=l.match(/^#{1,2}\s+(.*)/)){close();h+="<h2>"+inl(m[1])+"</h2>"}
+    else if(m=l.match(/^#{3,}\s+(.*)/)){close();h+="<h3>"+inl(m[1])+"</h3>"}
+    else if(m=l.match(/^\s*[-*•]\s+(.*)/)){if(list!=="ul"){close();h+="<ul>";list="ul"}h+="<li>"+inl(m[1])+"</li>"}
+    else if(m=l.match(/^\s*\d+[.)]\s+(.*)/)){if(list!=="ol"){close();h+="<ol>";list="ol"}h+="<li>"+inl(m[1])+"</li>"}
+    else if(l.trim()===""){close()}
+    else{close();h+="<p>"+inl(l)+"</p>"}
+  });
+  close();return h;
+}
+function links(text){
+  var e=encodeURIComponent(text.slice(0,200));
+  $("links").innerHTML=
+   '<a target="_blank" rel="noopener" href="https://pubmed.ncbi.nlm.nih.gov/?term='+e+'&sort=date">PubMed (newest)</a>'+
+   '<a target="_blank" rel="noopener" href="https://www.nice.org.uk/search?q='+e+'">NICE</a>'+
+   '<a target="_blank" rel="noopener" href="https://www.sign.ac.uk/search/?q='+e+'">SIGN</a>'+
+   '<a target="_blank" rel="noopener" href="https://bnf.nice.org.uk/search/?q='+e+'">BNF</a>'+
+   '<a target="_blank" rel="noopener" href="https://www.brit-thoracic.org.uk/?s='+e+'">BTS</a>';
+}
+function hist(){
+  var a=[];try{a=JSON.parse(localStorage.getItem("wg_h")||"[]")}catch(e){}
+  if(!a.length){$("hist").innerHTML="";return}
+  $("hist").innerHTML="Recent searches"+a.map(function(x,i){return '<button data-i="'+i+'">'+esc(x.slice(0,70))+'</button>'}).join("");
+  $("hist").querySelectorAll("button").forEach(function(b){b.onclick=function(){q.value=a[+b.dataset.i];q.focus()}});
+}
+function save(t){
+  var a=[];try{a=JSON.parse(localStorage.getItem("wg_h")||"[]")}catch(e){}
+  a=[t].concat(a.filter(function(x){return x!==t})).slice(0,6);
+  try{localStorage.setItem("wg_h",JSON.stringify(a))}catch(e){}hist();
+}
+$("go").onclick=async function(){
+  var text=q.value.trim();if(!text||busy)return;
+  var code=localStorage.getItem("wg_c");
+  if(!code){code=prompt("Access code (from the app owner)");if(!code)return;code=code.trim()}
+  err.textContent="";busy=true;$("go").disabled=true;$("go").textContent="Searching…";
+  out.style.display="block";out.innerHTML="<p>Searching PubMed and guidelines…</p>";$("copy").style.display="none";links(text);last="";
+  try{
+    var r=await fetch("/api/ask",{method:"POST",headers:{"Content-Type":"application/json","x-access-code":code},body:JSON.stringify({text:text,mode:mode})});
+    if(r.status===401){localStorage.removeItem("wg_c");throw new Error("Wrong access code.")}
+    if(r.status===429)throw new Error("Too many requests. Wait a minute.");
+    if(!r.ok)throw new Error("Request failed.");
+    localStorage.setItem("wg_c",code);
+    var rd=r.body.getReader(),dec=new TextDecoder();
+    for(;;){var x=await rd.read();if(x.done)break;last+=dec.decode(x.value,{stream:true});out.innerHTML=md(last)}
+    $("copy").style.display="";save(text);
+  }catch(e){err.textContent=e.message||"Something went wrong.";if(!last)out.style.display="none"}
+  done();
+};
+function done(){busy=false;$("go").disabled=false;$("go").textContent="Search"}
+$("copy").onclick=async function(){
+  try{await navigator.clipboard.writeText(last.replace(/\*\*/g,""));$("copy").textContent="Copied";setTimeout(function(){$("copy").textContent="Copy"},1500)}
+  catch(e){$("copy").textContent="Copy failed";setTimeout(function(){$("copy").textContent="Copy"},1500)}
+};
+hist();
+if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js");
+})();
+</script>
+</body>
+</html>
