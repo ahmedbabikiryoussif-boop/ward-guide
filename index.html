@@ -49,7 +49,7 @@ button.sec{background:var(--card);color:var(--text);border:1px solid var(--line)
   <button class="chip" data-m="evidence" aria-pressed="false">Latest evidence</button>
   <button class="chip" data-m="mrcp" aria-pressed="false">MRCP topic</button>
 </div>
-<div class="row"><button class="go" id="go">Search</button><button class="sec" id="copy" style="display:none">Copy</button></div>
+<div class="row"><button class="go" id="go">Search</button><button class="sec" id="copy" style="display:none">Copy</button><button class="sec" id="pdf" style="display:none">PDF</button></div>
 <div id="err" class="err"></div>
 <div id="out"></div>
 <div class="links" id="links"></div>
@@ -57,7 +57,7 @@ button.sec{background:var(--card);color:var(--text);border:1px solid var(--line)
 </main>
 <script>
 (function(){
-var mode="full",busy=false,last="";
+var mode="full",busy=false,last="",lastQ="",pdfFile=null;
 var $=function(i){return document.getElementById(i)};
 var q=$("q"),out=$("out"),err=$("err");
 
@@ -105,7 +105,7 @@ $("go").onclick=async function(){
   var code=localStorage.getItem("wg_c");
   if(!code){code=prompt("Access code (from the app owner)");if(!code)return;code=code.trim()}
   err.textContent="";busy=true;$("go").disabled=true;$("go").textContent="Searching…";
-  out.style.display="block";out.innerHTML="<p>Searching PubMed and guidelines…</p>";$("copy").style.display="none";links(text);last="";
+  out.style.display="block";out.innerHTML="<p>Searching PubMed and guidelines…</p>";$("copy").style.display="none";$("pdf").style.display="none";links(text);last="";lastQ=text;pdfFile=null;
   try{
     var r=await fetch("/api/ask",{method:"POST",headers:{"Content-Type":"application/json","x-access-code":code},body:JSON.stringify({text:text,mode:mode})});
     if(r.status===401){localStorage.removeItem("wg_c");throw new Error("Wrong access code.")}
@@ -114,7 +114,7 @@ $("go").onclick=async function(){
     localStorage.setItem("wg_c",code);
     var rd=r.body.getReader(),dec=new TextDecoder();
     for(;;){var x=await rd.read();if(x.done)break;last+=dec.decode(x.value,{stream:true});out.innerHTML=md(last)}
-    $("copy").style.display="";save(text);
+    $("copy").style.display="";$("pdf").style.display="";save(text);
   }catch(e){err.textContent=e.message||"Something went wrong.";if(!last)out.style.display="none"}
   done();
 };
@@ -122,6 +122,26 @@ function done(){busy=false;$("go").disabled=false;$("go").textContent="Search"}
 $("copy").onclick=async function(){
   try{await navigator.clipboard.writeText(last.replace(/\*\*/g,""));$("copy").textContent="Copied";setTimeout(function(){$("copy").textContent="Copy"},1500)}
   catch(e){$("copy").textContent="Copy failed";setTimeout(function(){$("copy").textContent="Copy"},1500)}
+};
+$("pdf").onclick=async function(){
+  var b=$("pdf");
+  function share(f){return navigator.canShare&&navigator.canShare({files:[f]})?navigator.share({files:[f],title:"Ward Guide"}):Promise.reject(new Error("noshare"))}
+  function fallback(f){var u=URL.createObjectURL(f);window.open(u,"_blank")||(location.href=u)}
+  if(pdfFile){var g=pdfFile;pdfFile=null;b.textContent="PDF";share(g).catch(function(e){if(!e||e.name!=="AbortError")fallback(g)});return}
+  var code=localStorage.getItem("wg_c");if(!code||!last)return;
+  b.disabled=true;b.textContent="Making PDF…";err.textContent="";
+  try{
+    var r=await fetch("/api/pdf",{method:"POST",headers:{"Content-Type":"application/json","x-access-code":code},body:JSON.stringify({title:lastQ,text:last})});
+    if(!r.ok)throw new Error("pdf");
+    var blob=await r.blob(),slug=(lastQ||"answer").toLowerCase().replace(/[^a-z0-9]+/g,"-").slice(0,40).replace(/^-|-$/g,"");
+    var f=new File([blob],"ward-guide-"+slug+".pdf",{type:"application/pdf"});
+    try{await share(f)}catch(e){
+      if(e&&e.name==="AbortError"){}
+      else if(e&&e.message==="noshare"){fallback(f)}
+      else{pdfFile=f;b.textContent="Tap to save PDF";b.disabled=false;return}
+    }
+  }catch(e){err.textContent="Could not make the PDF."}
+  b.textContent="PDF";b.disabled=false;
 };
 hist();
 if("serviceWorker" in navigator)navigator.serviceWorker.register("/sw.js");
